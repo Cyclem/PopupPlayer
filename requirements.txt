@@ -1,0 +1,4 @@
+PyQt6
+PyQt6-WebEngine
+pyinstaller
+pyqt6-sip
