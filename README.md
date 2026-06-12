@@ -2,6 +2,8 @@
 
 这是一个伪装成页游广告的本地视频播放器。程序采用无边框、无标准UI控件的设计，默认置顶于屏幕右下角。
 
+<img width="300" height="375" alt="ad_bg" src="https://github.com/user-attachments/assets/a38785cd-1b7a-4946-8d49-139a1c0d5ca8" />
+
 ## 核心功能
 
 - **界面伪装**：无系统标题栏与边框，UI 交互完全依赖底层背景图（`ad_bg.png`）。
