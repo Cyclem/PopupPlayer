@@ -13,28 +13,52 @@ def get_resource_path(relative_path):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
 
-def parse_srt(file_path):
+# --- 升级版：支持 SRT 和 ASS 的字幕解析器 ---
+def parse_subtitles(file_path):
     subtitles = []
     if not os.path.exists(file_path): return subtitles
-    for enc in ['utf-8', 'gbk', 'utf-8-sig']:
+
+    ext = os.path.splitext(file_path)[1].lower()
+    content = None
+    for enc in ['utf-8', 'gbk', 'utf-16', 'utf-8-sig']:
         try:
             with open(file_path, 'r', encoding=enc) as f:
                 content = f.read().replace('\r\n', '\n')
             break
         except: continue
     if not content: return subtitles
+
     try:
-        blocks = content.split('\n\n')
-        for block in blocks:
-            lines = [l for l in block.split('\n') if l.strip()]
-            if len(lines) >= 3:
-                times = re.findall(r'(\d+):(\d+):(\d+),(\d+)', lines[1])
-                if len(times) == 2:
-                    start_ms = int(times[0][0])*3600000 + int(times[0][1])*60000 + int(times[0][2])*1000 + int(times[0][3])
-                    end_ms = int(times[1][0])*3600000 + int(times[1][1])*60000 + int(times[1][2])*1000 + int(times[1][3])
-                    text = "\n".join(lines[2:])
-                    subtitles.append({'start': start_ms, 'end': end_ms, 'text': text})
-    except: pass
+        if ext == ".srt":
+            # 标准 SRT 解析
+            blocks = content.split('\n\n')
+            for block in blocks:
+                lines = [l for l in block.split('\n') if l.strip()]
+                if len(lines) >= 3:
+                    times = re.findall(r'(\d+):(\d+):(\d+),(\d+)', lines[1])
+                    if len(times) == 2:
+                        start_ms = int(times[0][0])*3600000 + int(times[0][1])*60000 + int(times[0][2])*1000 + int(times[0][3])
+                        end_ms = int(times[1][0])*3600000 + int(times[1][1])*60000 + int(times[1][2])*1000 + int(times[1][3])
+                        text = re.sub(r'<[^>]*>', '', "\n".join(lines[2:])) # 去除HTML标签
+                        subtitles.append({'start': start_ms, 'end': end_ms, 'text': text})
+
+        elif ext == ".ass":
+            # 基础 ASS 解析 (只提取文本，忽略样式)
+            for line in content.split('\n'):
+                if line.startswith("Dialogue:"):
+                    parts = line.split(',', 9) # ASS格式通常有9个逗号分隔属性
+                    if len(parts) >= 10:
+                        # 提取时间轴 0:00:01.00
+                        start_t = re.findall(r'(\d+):(\d+):(\d+)\.(\d+)', parts[1])
+                        end_t = re.findall(r'(\d+):(\d+):(\d+)\.(\d+)', parts[2])
+                        if start_t and end_t:
+                            s_ms = int(start_t[0][0])*3600000 + int(start_t[0][1])*60000 + int(start_t[0][2])*1000 + int(start_t[0][3])*10
+                            e_ms = int(end_t[0][0])*3600000 + int(end_t[0][1])*60000 + int(end_t[0][2])*1000 + int(end_t[0][3])*10
+                            # 去除 {} 里的样式代码，如 {\pos(x,y)}
+                            text = re.sub(r'\{.*?\}', '', parts[9]).replace(r'\N', '\n')
+                            subtitles.append({'start': s_ms, 'end': e_ms, 'text': text.strip()})
+    except Exception as e:
+        print(f"解析出错: {e}")
     return subtitles
 
 class AdPopupPlayer(QWidget):
@@ -159,10 +183,18 @@ class AdPopupPlayer(QWidget):
             self.sub_label.hide()
 
     def open_file_dialog(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择视频", "", "Video (*.mp4 *.mkv *.avi)")
+        # 修改过滤器，加入 mkv
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择视频", "", "Video (*.mp4 *.mkv *.avi *.flv)")
         if file_path:
-            srt_path = os.path.splitext(file_path)[0] + ".srt"
-            self.subtitles = parse_srt(srt_path)
+            # 自动搜索同名字幕，先找 .srt，再找 .ass
+            base_path = os.path.splitext(file_path)[0]
+            if os.path.exists(base_path + ".srt"):
+                self.subtitles = parse_subtitles(base_path + ".srt")
+            elif os.path.exists(base_path + ".ass"):
+                self.subtitles = parse_subtitles(base_path + ".ass")
+            else:
+                self.subtitles = []
+
             self.player.setSource(QUrl.fromLocalFile(os.path.abspath(file_path)))
             self.player_container.show()
             self.player.play()
