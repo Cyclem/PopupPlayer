@@ -41,6 +41,7 @@ class AdPopupPlayer(QWidget):
     def __init__(self, bg_image_path):
         super().__init__()
 
+        # 配置文件
         app_dir = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.dirname(os.path.abspath(__file__))
         self.settings = QSettings(os.path.join(app_dir, "config.ini"), QSettings.Format.IniFormat)
 
@@ -48,15 +49,19 @@ class AdPopupPlayer(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
 
-        self.CORNER_RADIUS, self.CROP_INSET = 20, 12
+        # 图像处理与抗锯齿参数
+        self.CORNER_RADIUS, self.CROP_INSET = 20, 10
         self.raw_pixmap = QPixmap(bg_image_path)
         self.aspect_ratio = self.raw_pixmap.height() / self.raw_pixmap.width()
 
+        # 恢复尺寸或初始化
         saved_geo = self.settings.value("geometry")
         if saved_geo: self.restoreGeometry(saved_geo)
         else: self.resize(380, int(380 * self.aspect_ratio))
 
-        self.v_y_rate, self.v_h_rate = 0.27, 0.46
+        # --- 针对新素材图的比例参数 ---
+        self.v_y_rate = 0.28  # 视频下移，露出标题
+        self.v_h_rate = 0.45  # 视频高度比例
         self.subtitles = []
 
         self.init_ui()
@@ -65,19 +70,19 @@ class AdPopupPlayer(QWidget):
         else: self.move(self.settings.value("pos"))
 
     def init_ui(self):
-        # 1. 透明“载入视频”区 (覆盖在底部的“开始游戏”图标上)
+        # 1. 载入视频点击区 (精确匹配下移后的金色按钮)
         self.start_game_hitbox = QPushButton(self)
         self.start_game_hitbox.setStyleSheet("background: transparent; border: none;")
         self.start_game_hitbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_game_hitbox.clicked.connect(self.open_file_dialog)
 
-        # 2. 透明“更换视频”区 (覆盖在底部的“广告”文字上)
+        # 2. 更换/重置点击区 (覆盖右下角“广告”字样)
         self.reset_hitbox = QPushButton(self)
         self.reset_hitbox.setStyleSheet("background: transparent; border: none;")
         self.reset_hitbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.reset_hitbox.clicked.connect(self.reset_to_select)
 
-        # 3. 播放器容器 (纯净视频画面)
+        # 3. 播放器容器
         self.player_container = QFrame(self)
         self.player_container.hide()
         layout = QVBoxLayout(self.player_container)
@@ -96,14 +101,10 @@ class AdPopupPlayer(QWidget):
         layout.addWidget(self.video_widget)
         layout.addWidget(self.slider)
 
-        # 4. 【核心改动】字幕标签：放在整个窗口的最底部 (视频区之外)
+        # 4. 字幕标签 (放置在视频下方与按钮上方的黑底区域)
         self.sub_label = QLabel(self)
         self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.sub_label.setStyleSheet("""
-                color: #FFFF00; 
-                font-weight: bold; 
-                background: transparent;
-            """)
+        self.sub_label.setStyleSheet("color: #FFFF00; font-weight: bold; background: transparent;")
         self.sub_label.setWordWrap(True)
         self.sub_label.hide()
 
@@ -117,30 +118,28 @@ class AdPopupPlayer(QWidget):
     def resizeEvent(self, event):
         w, h = self.width(), self.height()
 
-        # 1. 视频区域 (占高度的 27% 到 73%)
+        # 1. 视频区域
         v_rect = QRect(0, int(h * self.v_y_rate), w, int(h * self.v_h_rate))
         self.player_container.setGeometry(v_rect)
 
-        # 2. 【重点调整】“开始游戏”透明感应区
-        # 居中放置，高度紧贴视频下方，大小刚好包住常规的图标按钮
-        btn_w = int(w * 0.6)         # 宽度占 60%
-        btn_x = int((w - btn_w) / 2) # 水平居中
-        btn_y = int(h * 0.74)        # 从高度 74% 处开始
-        btn_h = int(h * 0.15)        # 高度占 15%，到 89% 结束，绝不阻挡底部字幕
-        self.start_game_hitbox.setGeometry(btn_x, btn_y, btn_w, btn_h)
-
-        # 3. “广告”文字感应区 (最右下角，用来重置视频)
-        self.reset_hitbox.setGeometry(int(w * 0.8), int(h * 0.9), int(w * 0.2), int(h * 0.1))
-
-        # 4. 字幕区域 (严格放在最底部的黑边里)
-        font_size = max(9, int(w / 28))
+        # 2. 字幕区域 (视频下方 73% - 78% 处)
+        font_size = max(10, int(w / 26))
         self.sub_label.setFont(QFont("Microsoft YaHei", font_size))
-        # 宽度为 80%，避开右下角的广告字样，高度从 90% 开始到底部
-        self.sub_label.setGeometry(10, int(h * 0.9), int(w * 0.8) - 10, int(h * 0.1))
+        self.sub_label.setGeometry(10, int(h * 0.73), w - 20, int(h * 0.05))
         self.sub_label.raise_()
 
-        # 5. 关闭按钮 (右上角)
-        btn_sz = int(w * 0.13)
+        # 3. “开始游戏”感应区 (适应最下方金色图标：78% - 93% 处)
+        btn_w = int(w * 0.58)
+        btn_x = (w - btn_w) // 2
+        btn_y = int(h * 0.85)
+        btn_h = int(h * 0.15)
+        self.start_game_hitbox.setGeometry(btn_x, btn_y, btn_w, btn_h)
+
+        # 4. “广告”重置感应区 (最右下角)
+        self.reset_hitbox.setGeometry(int(w * 0.85), int(h * 0.93), int(w * 0.15), int(h * 0.07))
+
+        # 5. 关闭按钮
+        btn_sz = int(w * 0.12)
         self.close_btn.setGeometry(w - btn_sz, 0, btn_sz, btn_sz)
 
         super().resizeEvent(event)
@@ -155,7 +154,7 @@ class AdPopupPlayer(QWidget):
         if current_text:
             self.sub_label.setText(current_text)
             self.sub_label.show()
-            self.sub_label.raise_() # 确保不被背景图压住
+            self.sub_label.raise_()
         else:
             self.sub_label.hide()
 
@@ -220,7 +219,10 @@ class AdPopupPlayer(QWidget):
         self.move(s.x() + s.width() - self.width() - 15, s.y() + s.height() - self.height() - 15)
 
 if __name__ == '__main__':
-    if sys.platform.startswith('linux'): os.environ["QT_QPA_PLATFORM"] = "xcb"
+    # 自动适配平台环境
+    if sys.platform.startswith('linux'):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+
     app = QApplication(sys.argv)
     bg = get_resource_path("ad_bg.png")
     player = AdPopupPlayer(bg)
