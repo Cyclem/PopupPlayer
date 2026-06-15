@@ -42,14 +42,15 @@ def parse_subtitles(file_path):
                 if line.startswith("Dialogue:"):
                     parts = line.split(',', 9)
                     if len(parts) >= 10:
-                        st = re.findall(r'(\d+):(\d+):(\d+)\.(\d+)', parts[1])
-                        et = re.findall(r'(\d+):(\d+):(\d+)\.(\d+)', parts[2])
-                        if st and et:
-                            s_ms = int(st[0][0])*3600000 + int(st[0][1])*60000 + int(st[0][2])*1000 + int(st[0][3])*10
-                            e_ms = int(et[0][0])*3600000 + int(et[0][1])*60000 + int(et[0][2])*1000 + int(et[0][3])*10
+                        start_t = re.findall(r'(\d+):(\d+):(\d+)\.(\d+)', parts[1])
+                        end_t = re.findall(r'(\d+):(\d+):(\d+)\.(\d+)', parts[2])
+                        if start_t and end_t:
+                            s_ms = int(start_t[0][0])*3600000 + int(start_t[0][1])*60000 + int(start_t[0][2])*1000 + int(start_t[0][3])*10
+                            e_ms = int(end_t[0][0])*3600000 + int(end_t[0][1])*60000 + int(end_t[0][2])*1000 + int(end_t[0][3])*10
                             text = re.sub(r'\{.*?\}', '', parts[9]).replace(r'\N', '\n')
                             subtitles.append({'start': s_ms, 'end': e_ms, 'text': text.strip()})
-    except: pass
+    except Exception as e:
+        print(f"解析出错: {e}")
     return subtitles
 
 class AdPopupPlayer(QWidget):
@@ -65,7 +66,6 @@ class AdPopupPlayer(QWidget):
 
         self.CORNER_RADIUS = 20
         self.raw_pixmap = QPixmap(bg_image_path)
-        self.scaled_bg = self.raw_pixmap
         self.aspect_ratio = self.raw_pixmap.height() / self.raw_pixmap.width()
         self.is_resizing_live = False  
 
@@ -182,8 +182,6 @@ class AdPopupPlayer(QWidget):
         btn_sz = int(w * 0.12)
         self.close_btn.setGeometry(w - btn_sz, 0, btn_sz, btn_sz)
 
-        mode = Qt.TransformationMode.FastTransformation if self.is_resizing_live else Qt.TransformationMode.SmoothTransformation
-        self.scaled_bg = self.raw_pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, mode)
         super().resizeEvent(event)
 
     def on_position_changed(self, position):
@@ -212,15 +210,11 @@ class AdPopupPlayer(QWidget):
         self.audio.setMuted(True)
 
     def on_slider_moved(self, pos):
-        # 【核心修改】拖动时实时更新视频画面位置
         self.player.setPosition(pos)
 
     def on_slider_released(self):
-        # 跳转到最终位置
         self.player.setPosition(self.slider.value())
-        # 取消静音
         self.audio.setMuted(False)
-        # 恢复之前的播放状态
         if self.was_playing:
             self.player.play()
         self.slider_dragging = False
@@ -228,13 +222,13 @@ class AdPopupPlayer(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.pos()
-            # 如果点在进度条热区，优先处理进度条，拦截拖动窗口
+            # 1. 拦截进度条和视频区域，防止拖动窗口
             if self.slider.isVisible() and self.slider.geometry().contains(pos):
                 return
-            # 如果点在视频区，不拖动窗口（因为那里有暂停功能）
             if self.player_container.isVisible() and self.player_container.geometry().contains(pos):
                 return
             
+            # 2. 区分【左上角缩放】和【空白处移动】
             if QRect(0,0,45,45).contains(pos):
                 self.is_resizing = self.is_resizing_live = True
                 self.anchor_br = self.geometry().bottomRight()
@@ -242,6 +236,8 @@ class AdPopupPlayer(QWidget):
                 self.is_moving = True
                 self.drag_start_pos = event.globalPosition().toPoint()
                 self.start_geo = self.geometry()
+                # 【核心修正】：调用系统原生接口进行移动，极致顺滑
+                self.window().windowHandle().startSystemMove()
 
     def mouseMoveEvent(self, event):
         if not event.buttons():
@@ -251,16 +247,28 @@ class AdPopupPlayer(QWidget):
             curr_pos = event.globalPosition().toPoint()
             new_w = max(280, self.anchor_br.x() - curr_pos.x())
             self.setGeometry(self.anchor_br.x() - new_w, self.anchor_br.y() - int(new_w * self.aspect_ratio), new_w, int(new_w * self.aspect_ratio))
-        elif self.is_moving:
-            self.move(self.start_geo.topLeft() + (event.globalPosition().toPoint() - self.drag_start_pos))
+
+    def mouseReleaseEvent(self, event):
+        if self.is_resizing_live:
+            self.is_resizing_live = False
+            # 触发一次高质量重绘
+            self.update()
+        self.is_resizing = self.is_moving = False
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 【画质修复核心】：非拖动状态下开启平滑图像插值 (双线性过滤)
+        if not self.is_resizing_live:
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
         path = QPainterPath()
         path.addRoundedRect(0,0,self.width(),self.height(),self.CORNER_RADIUS,self.CORNER_RADIUS)
         p.setClipPath(path)
-        p.drawPixmap(self.rect(), self.scaled_bg)
+        
+        # 【画质修复核心】：直接绘制原图，摒弃容易产生模糊误差的手动缓存图
+        p.drawPixmap(self.rect(), self.raw_pixmap)
 
     def open_file_dialog(self):
         fp, _ = QFileDialog.getOpenFileName(self, "选择视频", "", "Video (*.mp4 *.mkv *.avi *.flv)")
