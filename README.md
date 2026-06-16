@@ -73,6 +73,15 @@ pyinstaller --noconsole --onefile \
 main.py
 ```
 
+**mpv-1.dll获取方式:**
+
+*   **下载地址**：[mpv-winbuild-cmake (shinchiro)](https://github.com/shinchiro/mpv-winbuild-cmake/releases)
+*   **找哪个文件？**：
+    找文件名包含 `mpv-dev-x86_64-XXXX.7z` 的文件（因为你的 Python 3.14 是 64 位的，必须下载 **x86_64** 版本）。
+*   **如何提取**：
+    下载解压后，在 `lib` 文件夹或者根目录下就能找到 `mpv-1.dll`。
+
+
 ### 3. 发布须知
 
 生成的可执行文件位于 `dist` 文件夹内。
