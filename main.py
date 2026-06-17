@@ -74,6 +74,12 @@ class AdPopupPlayer(QWidget):
         self.current_subtitle_text = ""
         self.last_manual_seek_time = 0 
         self.video_duration = 0.0
+        
+        # --- 新增：直播模式状态记录 ---
+        self.is_live_mode = False 
+        self.current_play_url = ""
+        self.live_is_playing = False
+        
         self.time_signal.connect(self._sync_progress)
 
         app_real_dir = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else curr_dir
@@ -129,8 +135,10 @@ class AdPopupPlayer(QWidget):
         if value is not None: self.video_duration = float(value)
 
     def _sync_progress(self, sec):
+        # 直播模式屏蔽进度条同步
+        if self.is_live_mode: return 
+
         if self.video_duration > 0 and not self.slider_dragging:
-            # 如果刚手动跳转完，给 1 秒缓冲时间，不自动同步
             if time.time() - self.last_manual_seek_time < 1.0: return
             
             val = int((sec / self.video_duration) * 1000)
@@ -217,15 +225,10 @@ class AdPopupPlayer(QWidget):
     def on_slider_moved(self, val):
         if self.video_duration <= 0 or not self.mpv_player: return
         target_s = (val / 1000.0) * self.video_duration
-        
-        # --- 实时视频预览核心逻辑 ---
         try:
-            # 使用 'keyframes' 查找模式，实现流畅预览且不卡顿
             self.mpv_player.command('seek', target_s, 'absolute', 'keyframes')
-        except:
-            pass
+        except: pass
 
-        # 更新时间标签
         self.time_label.setText(f"{self.format_time(target_s*1000)} / {self.format_time(self.video_duration*1000)}")
         self.time_label.adjustSize()
         self.time_label.move((self.width()-self.time_label.width())//2, self.container.y()-45)
@@ -236,13 +239,8 @@ class AdPopupPlayer(QWidget):
         self.last_manual_seek_time = time.time()
         if self.mpv_player:
             target_s = (self.slider.value() / 1000.0) * self.video_duration
-            # 最终跳转使用 'exact' 保证位置精确
-            try:
-                self.mpv_player.command('seek', target_s, 'absolute', 'exact')
-            except:
-                pass
-            
-            # 如果之前在播放，则恢复播放
+            try: self.mpv_player.command('seek', target_s, 'absolute', 'exact')
+            except: pass
             if self.was_playing:
                 self.mpv_player.pause = False
         self.time_label.hide()
@@ -254,7 +252,16 @@ class AdPopupPlayer(QWidget):
                 self.slider.event(event)
                 return
             if self.container.isVisible() and self.container.geometry().contains(pos):
-                if self.mpv_player: self.mpv_player.pause = not self.mpv_player.pause
+                if self.mpv_player: 
+                    # === 直播画面交互重构：停止与重载 ===
+                    if self.is_live_mode:
+                        if self.live_is_playing:
+                            self.mpv_player.command('stop') # 彻底断开流
+                            self.live_is_playing = False
+                        else:
+                            self.play_media(self.current_play_url, is_live=True) # 重新加载直播流
+                    else:
+                        self.mpv_player.pause = not self.mpv_player.pause # 点播常规暂停
                 return
             if QRect(0,0,45,45).contains(pos):
                 self.is_resizing = True
@@ -290,26 +297,53 @@ class AdPopupPlayer(QWidget):
 
     def open_file_dialog(self):
         clip = QApplication.clipboard().text().strip()
+        
+        # 匹配 B站点播 或 主流平台直播链接
         bv_match = re.search(r'(BV[1-9A-HJ-NP-Za-km-z]{10})', clip)
+        live_match = re.search(r'(live\.bilibili\.com/\d+|douyu\.com/\d+|huya\.com/[a-zA-Z0-9_]+|twitch\.tv/[a-zA-Z0-9_]+)', clip)
+
         if bv_match:
-            self.play_media(f"https://www.bilibili.com/video/{bv_match.group(1)}")
+            self.play_media(f"https://www.bilibili.com/video/{bv_match.group(1)}", is_live=False)
+            QApplication.clipboard().clear()
+        elif live_match:
+            # 补全协议头并标记为直播模式
+            url = clip if clip.startswith("http") else f"https://{live_match.group(1)}"
+            self.play_media(url, is_live=True)
             QApplication.clipboard().clear()
         else:
             fp, _ = QFileDialog.getOpenFileName(self, "选择视频", "", "Video (*.mp4 *.mkv *.avi *.flv *.webm)")
-            if fp: self.play_media(os.path.abspath(fp))
+            if fp: self.play_media(os.path.abspath(fp), is_live=False)
 
-    def play_media(self, target):
+    def play_media(self, target, is_live=False):
         if not self.mpv_player: return
         self.save_current_progress()
+        
+        self.is_live_mode = is_live
+        self.current_play_url = target
         self.current_media_id = hashlib.md5(target.encode("utf-8")).hexdigest()
-        self.subtitles = parse_subtitles(os.path.splitext(target)[0]+".srt") if not target.startswith("http") else []
-        last_pos = int(self.settings.value(f"History/{self.current_media_id}", 0))
-        self.mpv_player['start'] = str(last_pos / 1000.0) if last_pos > 1000 else "0"
+        
+        if is_live:
+            # === 直播模式初始化 ===
+            self.subtitles = []
+            try: self.mpv_player['profile'] = 'low-latency' # 降低缓冲延迟
+            except: pass
+            self.mpv_player['start'] = "0"
+            self.slider.hide()
+            self.live_is_playing = True
+        else:
+            # === 点播模式初始化 ===
+            self.subtitles = parse_subtitles(os.path.splitext(target)[0]+".srt") if not target.startswith("http") else []
+            last_pos = int(self.settings.value(f"History/{self.current_media_id}", 0))
+            self.mpv_player['start'] = str(last_pos / 1000.0) if last_pos > 1000 else "0"
+            self.slider.show()
+
         self.mpv_player.play(target)
         self.container.show()
-        self.slider.show()
 
     def save_current_progress(self):
+        # 直播不保存任何进度
+        if self.is_live_mode: return 
+        
         if self.mpv_player and self.current_media_id:
             pos, dur = self.mpv_player.time_pos, self.mpv_player.duration
             if pos:
@@ -321,6 +355,8 @@ class AdPopupPlayer(QWidget):
         if self.mpv_player: 
             self.save_current_progress()
             self.mpv_player.command('stop')
+        self.is_live_mode = False
+        self.live_is_playing = False
         self.container.hide()
         self.slider.hide()
         self.sub_label.hide()
@@ -342,7 +378,6 @@ class AdPopupPlayer(QWidget):
         s = int(ms // 1000)
         m, s = divmod(s, 60); h, m = divmod(m, 60)
         return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
-
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
